@@ -3,11 +3,11 @@ use clap::Subcommand;
 
 use crate::repl::{start, Repl};
 
-pub struct Rally;
+pub struct App;
 
-impl Rally {
+impl App {
     pub fn new() -> Self {
-        Rally
+        App
     }
 
     pub fn start(&self) -> Result<()> {
@@ -15,11 +15,11 @@ impl Rally {
     }
 }
 
-impl Repl for Rally {
+impl Repl for App {
     type Commands = Commands;
 
     fn prompt(&self) -> &str {
-        "rally"
+        env!("CARGO_PKG_NAME")
     }
 
     fn respond(&self, command: Self::Commands) -> Result<bool> {

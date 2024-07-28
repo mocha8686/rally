@@ -1,8 +1,8 @@
 use anyhow::Result;
-use rally::rally::Rally;
+use rally::app::App;
 
 fn main() -> Result<()> {
-    let rally = Rally::new();
+    let rally = App::new();
     rally.start()?;
     Ok(())
 }
