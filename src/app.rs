@@ -37,6 +37,10 @@ impl Repl for App {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    /// Testing 1, 2, 3!
     Test,
+
+    /// Exit the application.
+    #[command(aliases = ["quit", "q"])]
     Exit,
 }
