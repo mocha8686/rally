@@ -1,11 +1,3 @@
-pub struct App;
+pub mod repl;
+pub mod rally;
 
-impl App {
-    pub fn new() -> Self {
-        App
-    }
-
-    pub fn run(&self) {
-        todo!()
-    }
-}
