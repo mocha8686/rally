@@ -34,6 +34,7 @@ impl Repl for App {
         Ok(false)
     }
 }
+
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     Test,
