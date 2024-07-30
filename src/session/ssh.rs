@@ -34,7 +34,6 @@ impl Session for Ssh {
         let port = url.port().unwrap_or(22);
 
         let config = Arc::new(client::Config {
-            inactivity_timeout: Some(Duration::from_secs(5)),
             ..Default::default()
         });
 
