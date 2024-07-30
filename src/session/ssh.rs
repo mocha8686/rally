@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use russh::{client, keys::key, Channel, ChannelMsg};
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
-    select,
+    select, time,
 };
 use url::Url;
 
@@ -24,48 +24,27 @@ impl client::Handler for Client {
 }
 
 pub struct Ssh {
+    url: Url,
     session: client::Handle<Client>,
     channel: Channel<client::Msg>,
 }
 
 impl Session for Ssh {
     async fn connect(url: Url) -> Result<Self> {
-        let host = url.host_str().ok_or(anyhow!("No host provided."))?;
-        let port = url.port().unwrap_or(22);
-
-        let config = Arc::new(client::Config {
-            ..Default::default()
-        });
-
-        let ssh = Client {};
-        let mut session = client::connect(config, (host, port), ssh).await?;
-
-        let auth_res = session
-            .authenticate_password(url.username(), url.password().unwrap_or(""))
-            .await?;
-        if !auth_res {
-            bail!("Authentication (with password) failed.");
-        }
-
-        let channel = session.channel_open_session().await?;
-        let (w, h) = crossterm::terminal::size()?;
-        channel
-            .request_pty(
-                false,
-                &std::env::var("TERM").unwrap_or("xterm".into()),
-                w.into(),
-                h.into(),
-                0,
-                0,
-                &[],
-            )
-            .await?;
-        channel.request_shell(false).await?;
-
-        Ok(Self { session, channel })
+        let session = create_session(&url).await?;
+        let channel = create_channel(&session).await?;
+        Ok(Self { url, session, channel })
     }
 
     async fn start(&mut self) -> Result<()> {
+        if self.session.is_closed() {
+            self.session = create_session(&self.url).await?;
+        }
+
+        if let Ok(None) = time::timeout(Duration::from_millis(50), self.channel.wait()).await {
+            self.channel = create_channel(&self.session).await?;
+        }
+
         let mut stdin = BufReader::new(io::stdin());
         let mut stdout = BufWriter::new(io::stdout());
         let mut buf = vec![0; 1024];
@@ -105,4 +84,43 @@ impl Session for Ssh {
 
         Ok(())
     }
+}
+
+async fn create_session(url: &Url) -> Result<client::Handle<Client>> {
+    let host = url.host_str().ok_or(anyhow!("No host provided."))?;
+    let port = url.port().unwrap_or(22);
+
+    let config = Arc::new(client::Config {
+        ..Default::default()
+    });
+
+    let ssh = Client {};
+    let mut session = client::connect(config, (host, port), ssh).await?;
+
+    let auth_res = session
+        .authenticate_password(url.username(), url.password().unwrap_or(""))
+        .await?;
+    if !auth_res {
+        bail!("Authentication (with password) failed.");
+    }
+
+    Ok(session)
+}
+
+async fn create_channel(session: &client::Handle<Client>) -> Result<Channel<client::Msg>> {
+    let channel = session.channel_open_session().await?;
+    let (w, h) = crossterm::terminal::size()?;
+    channel
+        .request_pty(
+            false,
+            &std::env::var("TERM").unwrap_or("xterm".into()),
+            w.into(),
+            h.into(),
+            0,
+            0,
+            &[],
+        )
+        .await?;
+    channel.request_shell(false).await?;
+    Ok(channel)
 }
