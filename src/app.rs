@@ -1,7 +1,9 @@
-use anyhow::Result;
+use anyhow::{ bail, Result};
+use async_trait::async_trait;
 use clap::Subcommand;
+use url::Url;
 
-use crate::repl::{start, Repl};
+use crate::{repl::{start, Repl, Response}, session::{ssh::Ssh, Session}};
 
 pub struct App;
 
@@ -10,11 +12,12 @@ impl App {
         App
     }
 
-    pub fn start(&self) -> Result<()> {
-        start(self)
+    pub async fn start(&self) -> Result<()> {
+        start(self).await
     }
 }
 
+#[async_trait]
 impl Repl for App {
     type Commands = Commands;
 
@@ -22,23 +25,27 @@ impl Repl for App {
         env!("CARGO_PKG_NAME")
     }
 
-    fn respond(&self, command: Self::Commands) -> Result<bool> {
+    async fn respond(&self, command: Self::Commands) -> Result<Option<Response<Self::Commands>>> {
         match command {
-            Commands::Test => {
-                println!("Hello, world!");
-            }
+            Commands::Connect { url } => match url.scheme() {
+                "ssh" => {
+                    let mut session = Ssh::connect(url).await?;
+                    session.start().await?;
+                }
+                _ => bail!("Scheme {} is not supported.", url.scheme()),
+            },
             Commands::Exit => {
-                return Ok(true);
+                return Ok(Some(Response::Exit));
             }
         }
-        Ok(false)
+        Ok(None)
     }
 }
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Testing 1, 2, 3!
-    Test,
+    /// Connect to a new remote.
+    Connect { url: Url },
 
     /// Exit the application.
     #[command(aliases = ["quit", "q"])]

@@ -1,3 +1,6 @@
 pub mod app;
-pub mod history;
-pub mod repl;
+pub(crate) mod history;
+pub(crate) mod repl;
+pub(crate) mod session;
+
+pub use app::App;

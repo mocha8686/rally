@@ -1,15 +1,22 @@
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use clap::{command, Parser, Subcommand};
 use colored::Colorize;
 use rustyline::DefaultEditor;
 
 use crate::history::get_history_path;
 
+#[async_trait]
 pub trait Repl {
     type Commands: Subcommand;
 
     fn prompt(&self) -> &str;
-    fn respond(&self, command: Self::Commands) -> Result<bool>;
+    async fn respond(&self, command: Self::Commands) -> Result<Option<Response<Self::Commands>>>;
+}
+
+pub enum Response<C> {
+    Switch(Box<dyn Repl<Commands = C>>),
+    Exit,
 }
 
 #[derive(Debug, Parser)]
@@ -19,19 +26,19 @@ struct Cli<T: Subcommand> {
     command: T,
 }
 
-pub fn start(repl: &impl Repl) -> Result<()> {
+pub async fn start(repl: &impl Repl) -> Result<()> {
     loop {
         let line = read_line(repl.prompt())?;
         if line.is_empty() {
             continue;
         }
 
-        match handle_command(repl, &line) {
-            Ok(should_quit) => {
-                if should_quit {
-                    break;
-                }
+        match handle_command(repl, &line).await {
+            Ok(Some(Response::Switch(repl))) => {
+                todo!()
             }
+            Ok(Some(Response::Exit)) => break,
+            Ok(None) => {}
             Err(e) => {
                 let res = e.downcast::<clap::error::Error>();
                 if let Ok(e) = res {
@@ -50,10 +57,13 @@ pub fn start(repl: &impl Repl) -> Result<()> {
     Ok(())
 }
 
-pub fn handle_command(repl: &impl Repl, input: &str) -> Result<bool> {
+pub async fn handle_command<C: Subcommand>(
+    repl: &impl Repl<Commands = C>,
+    input: &str,
+) -> Result<Option<Response<C>>> {
     let args = shlex::split(input).ok_or(anyhow!("Invalid quoting."))?;
     let cli = Cli::try_parse_from(args)?;
-    repl.respond(cli.command)
+    repl.respond(cli.command).await
 }
 
 pub fn read_line(prompt: &str) -> Result<String> {
