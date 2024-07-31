@@ -3,7 +3,7 @@ use clap::{command, error::ContextKind, Parser, Subcommand};
 use itertools::Itertools;
 use miette::{miette, IntoDiagnostic, LabeledSpan, Result};
 use owo_colors::OwoColorize;
-use rustyline::DefaultEditor;
+use rustyline::{Config, DefaultEditor, EditMode};
 
 use crate::history::get_history_path;
 
@@ -87,7 +87,8 @@ pub async fn handle_command<C: Subcommand>(
 pub fn read_line(prompt: &str) -> Result<String> {
     let history_res = get_history_path(prompt);
 
-    let mut rl = DefaultEditor::new().into_diagnostic()?;
+    let config = Config::builder().edit_mode(EditMode::Vi).build();
+    let mut rl = DefaultEditor::with_config(config).into_diagnostic()?;
 
     if let Some(history_path) = &history_res {
         rl.load_history(history_path).ok();
