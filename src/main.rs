@@ -1,9 +1,10 @@
-use anyhow::Result;
-use rally::app::App;
 mod app;
 mod history;
 mod repl;
 mod session;
+
+use miette::Result;
+use app::App;
 
 #[tokio::main]
 async fn main() -> Result<()> {

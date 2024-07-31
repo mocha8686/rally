@@ -1,9 +1,12 @@
-use anyhow::{ bail, Result};
 use async_trait::async_trait;
 use clap::Subcommand;
+use miette::{bail, Result};
 use url::Url;
 
-use crate::{repl::{start, Repl, Response}, session::{ssh::Ssh, Session}};
+use crate::{
+    repl::{start, Repl, Response},
+    session::{ssh::Ssh, Session},
+};
 
 pub struct App;
 
@@ -45,7 +48,10 @@ impl Repl for App {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Connect to a new remote.
-    Connect { url: Url },
+    Connect {
+        /// URL to connect to (proto://user:pass@host:port)
+        url: Url,
+    },
 
     /// Exit the application.
     #[command(aliases = ["quit", "q"])]

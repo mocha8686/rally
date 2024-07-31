@@ -2,8 +2,8 @@ use std::{sync::Arc, time::Duration};
 
 use super::Session;
 
-use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
+use miette::{bail, miette, IntoDiagnostic, Result};
 use russh::{client, keys::key, Channel, ChannelMsg};
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
@@ -15,10 +15,13 @@ struct Client;
 
 #[async_trait]
 impl client::Handler for Client {
-    type Error = anyhow::Error;
+    type Error = russh::Error;
 
     // TODO: implement properly
-    async fn check_server_key(&mut self, _server_public_key: &key::PublicKey) -> Result<bool> {
+    async fn check_server_key(
+        &mut self,
+        _server_public_key: &key::PublicKey,
+    ) -> Result<bool, Self::Error> {
         Ok(true)
     }
 }
@@ -33,7 +36,11 @@ impl Session for Ssh {
     async fn connect(url: Url) -> Result<Self> {
         let session = create_session(&url).await?;
         let channel = create_channel(&session).await?;
-        Ok(Self { url, session, channel })
+        Ok(Self {
+            url,
+            session,
+            channel,
+        })
     }
 
     async fn start(&mut self) -> Result<()> {
@@ -56,23 +63,23 @@ impl Session for Ssh {
                     match r {
                         Ok(0) => {
                             stdin_closed = true;
-                            self.channel.eof().await?;
+                            self.channel.eof().await.into_diagnostic()?;
                         },
-                        Ok(n) => self.channel.data(&buf[..n]).await?,
-                        Err(e) => return Err(e.into()),
+                        Ok(n) => self.channel.data(&buf[..n]).await.into_diagnostic()?,
+                        Err(e) => bail!(e),
                     };
                 },
                 Some(msg) = self.channel.wait() => {
                     match msg {
                         ChannelMsg::Data { ref data } => {
-                            stdout.write_all(data).await?;
-                            stdout.flush().await?;
+                            stdout.write_all(data).await.into_diagnostic()?;
+                            stdout.flush().await.into_diagnostic()?;
                         }
                         // ChannelMsg::ExitStatus { exit_status } => {
                             // code = exit_status;
                         ChannelMsg::ExitStatus { .. } => {
                             if !stdin_closed {
-                                self.channel.eof().await?;
+                                self.channel.eof().await.into_diagnostic()?;
                             }
                             break;
                         }
@@ -87,7 +94,7 @@ impl Session for Ssh {
 }
 
 async fn create_session(url: &Url) -> Result<client::Handle<Client>> {
-    let host = url.host_str().ok_or(anyhow!("No host provided."))?;
+    let host = url.host_str().ok_or(miette!("No host provided."))?;
     let port = url.port().unwrap_or(22);
 
     let config = Arc::new(client::Config {
@@ -95,11 +102,14 @@ async fn create_session(url: &Url) -> Result<client::Handle<Client>> {
     });
 
     let ssh = Client {};
-    let mut session = client::connect(config, (host, port), ssh).await?;
+    let mut session = client::connect(config, (host, port), ssh)
+        .await
+        .into_diagnostic()?;
 
     let auth_res = session
         .authenticate_password(url.username(), url.password().unwrap_or(""))
-        .await?;
+        .await
+        .into_diagnostic()?;
     if !auth_res {
         bail!("Authentication (with password) failed.");
     }
@@ -108,8 +118,8 @@ async fn create_session(url: &Url) -> Result<client::Handle<Client>> {
 }
 
 async fn create_channel(session: &client::Handle<Client>) -> Result<Channel<client::Msg>> {
-    let channel = session.channel_open_session().await?;
-    let (w, h) = crossterm::terminal::size()?;
+    let channel = session.channel_open_session().await.into_diagnostic()?;
+    let (w, h) = crossterm::terminal::size().into_diagnostic()?;
     channel
         .request_pty(
             false,
@@ -120,7 +130,8 @@ async fn create_channel(session: &client::Handle<Client>) -> Result<Channel<clie
             0,
             &[],
         )
-        .await?;
-    channel.request_shell(false).await?;
+        .await
+        .into_diagnostic()?;
+    channel.request_shell(false).await.into_diagnostic()?;
     Ok(channel)
 }
