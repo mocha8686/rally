@@ -12,7 +12,7 @@ pub struct App;
 
 impl App {
     pub fn new() -> Self {
-        App
+        Self
     }
 
     pub async fn start(&self) -> Result<()> {

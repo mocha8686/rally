@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use clap::{command, error::ContextKind, Parser, Subcommand};
-use itertools::Itertools;
-use miette::{miette, IntoDiagnostic, LabeledSpan, Result};
+use miette::{miette, IntoDiagnostic, Result};
 use owo_colors::OwoColorize;
 use rustyline::{Config, DefaultEditor, EditMode};
 
@@ -27,7 +26,10 @@ struct Cli<T: Subcommand> {
     command: T,
 }
 
-pub async fn start(repl: &impl Repl) -> Result<()> {
+pub async fn start<R>(repl: &R) -> Result<()>
+where
+    R: Repl,
+{
     loop {
         let line = read_line(repl.prompt())?;
         if line.is_empty() {
@@ -50,12 +52,13 @@ pub async fn start(repl: &impl Repl) -> Result<()> {
     Ok(())
 }
 
-pub async fn handle_command<C: Subcommand>(
-    repl: &impl Repl<Commands = C>,
-    input: &str,
-) -> Result<Option<Response<C>>> {
+pub async fn handle_command<C, R>(repl: &R, input: &str) -> Result<Option<Response<C>>>
+where
+    C: Subcommand,
+    R: Repl<Commands = C>
+{
     let input = input.trim();
-    let args = shlex::split(input).ok_or(miette!("Invalid quoting."))?;
+    let args = shlex::split(input).ok_or_else(|| miette!("Invalid quoting."))?;
     let res = Cli::try_parse_from(args);
 
     match res {
@@ -69,8 +72,7 @@ pub async fn handle_command<C: Subcommand>(
                 let invalid = e.get(ContextKind::InvalidSubcommand).unwrap();
                 let suggested = e
                     .get(ContextKind::SuggestedSubcommand)
-                    .map(|s| format!("A similar command exists: '{s}'"))
-                    .unwrap_or(String::new());
+                    .map_or_else(String::new, |s| format!("A similar command exists: '{s}'"));
 
                 let report = miette!(
                     help = format!("{suggested}\nFor more information, try 'help'."),

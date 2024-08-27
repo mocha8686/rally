@@ -48,7 +48,8 @@ impl Session for Ssh {
             self.session = create_session(&self.url).await?;
         }
 
-        if let Ok(None) = time::timeout(Duration::from_millis(50), self.channel.wait()).await {
+        let timeout = time::timeout(Duration::from_millis(50), self.channel.wait()).await;
+        if let Ok(None) = timeout {
             self.channel = create_channel(&self.session).await?;
         }
 
@@ -97,9 +98,7 @@ async fn create_session(url: &Url) -> Result<client::Handle<Client>> {
     let host = url.host_str().ok_or(miette!("No host provided."))?;
     let port = url.port().unwrap_or(22);
 
-    let config = Arc::new(client::Config {
-        ..Default::default()
-    });
+    let config = Arc::new(Default::default());
 
     let ssh = Client {};
     let mut session = client::connect(config, (host, port), ssh)
@@ -123,7 +122,7 @@ async fn create_channel(session: &client::Handle<Client>) -> Result<Channel<clie
     channel
         .request_pty(
             false,
-            &std::env::var("TERM").unwrap_or("xterm".into()),
+            &std::env::var("TERM").unwrap_or_else(|_| "xterm".into()),
             w.into(),
             h.into(),
             0,

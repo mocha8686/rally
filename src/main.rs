@@ -3,8 +3,8 @@ mod history;
 mod repl;
 mod session;
 
-use miette::Result;
 use app::App;
+use miette::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {
