@@ -1,6 +1,10 @@
 use async_trait::async_trait;
 use clap::Subcommand;
-use miette::{bail, Result};
+use crossterm::{
+    cursor, execute,
+    terminal::{self, ClearType},
+};
+use miette::{bail, IntoDiagnostic, Result};
 use url::Url;
 
 use crate::{
@@ -40,6 +44,15 @@ impl Repl for App {
             Commands::Exit => {
                 return Ok(Some(Response::Exit));
             }
+            Commands::Clear => {
+                let (_, lines) = cursor::position().into_diagnostic()?;
+                execute!(
+                    std::io::stdout(),
+                    terminal::ScrollUp(lines),
+                    cursor::MoveTo(0, 0),
+                )
+                .into_diagnostic()?;
+            }
         }
         Ok(None)
     }
@@ -56,4 +69,7 @@ pub enum Commands {
     /// Exit the application.
     #[command(aliases = ["quit", "q"])]
     Exit,
+
+    /// Clear the screen.
+    Clear,
 }
