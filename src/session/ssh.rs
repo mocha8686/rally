@@ -32,6 +32,7 @@ pub struct Ssh {
     channel: Channel<client::Msg>,
 }
 
+#[async_trait]
 impl Session for Ssh {
     async fn connect(url: Url) -> Result<Self> {
         let session = create_session(&url).await?;
@@ -43,16 +44,11 @@ impl Session for Ssh {
         })
     }
 
-    async fn start(&mut self) -> Result<()> {
-        if self.session.is_closed() {
-            self.session = create_session(&self.url).await?;
-        }
+    fn url(&self) -> &Url {
+        &self.url
+    }
 
-        let timeout = time::timeout(Duration::from_millis(50), self.channel.wait()).await;
-        if let Ok(None) = timeout {
-            self.channel = create_channel(&self.session).await?;
-        }
-
+    async fn read_loop(&mut self) -> Result<()> {
         let mut stdin = BufReader::new(io::stdin());
         let mut stdout = BufWriter::new(io::stdout());
         let mut buf = vec![0; 1024];
@@ -66,7 +62,13 @@ impl Session for Ssh {
                             stdin_closed = true;
                             self.channel.eof().await.into_diagnostic()?;
                         },
-                        Ok(n) => self.channel.data(&buf[..n]).await.into_diagnostic()?,
+                        Ok(n) => {
+                            let input = &buf[..n];
+                            match input.trim_ascii() {
+                                b"#bg" => break,
+                                _ => self.channel.data(input).await.into_diagnostic()?,
+                            }
+                        },
                         Err(e) => bail!(e),
                     };
                 },
@@ -91,6 +93,37 @@ impl Session for Ssh {
         }
 
         Ok(())
+    }
+
+    async fn is_connected(&mut self) -> bool {
+        self.session_is_connected() && self.channel_is_connected().await
+    }
+
+    async fn reconnect(&mut self) -> Result<()> {
+        if !self.session_is_connected() {
+            self.session = create_session(&self.url).await?;
+        }
+
+        if !self.channel_is_connected().await {
+            self.channel = create_channel(&self.session).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn send_data(&mut self, data: &[u8]) -> Result<()> {
+        self.channel.data(data).await.into_diagnostic()
+    }
+}
+
+impl Ssh {
+    fn session_is_connected(&self) -> bool {
+        !self.session.is_closed()
+    }
+
+    async fn channel_is_connected(&mut self) -> bool {
+        let timeout = time::timeout(Duration::from_millis(50), self.channel.wait()).await;
+        !matches!(timeout, Ok(None))
     }
 }
 

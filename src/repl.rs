@@ -1,5 +1,9 @@
 use async_trait::async_trait;
-use clap::{command, error::ContextKind, Parser, Subcommand};
+use clap::{
+    command,
+    error::{ContextKind, ErrorKind},
+    Parser, Subcommand,
+};
 use miette::{miette, IntoDiagnostic, Result};
 use owo_colors::OwoColorize;
 use rustyline::{Config, DefaultEditor, EditMode};
@@ -11,7 +15,10 @@ pub trait Repl {
     type Commands: Subcommand;
 
     fn prompt(&self) -> &str;
-    async fn respond(&self, command: Self::Commands) -> Result<Option<Response<Self::Commands>>>;
+    async fn respond(
+        &mut self,
+        command: Self::Commands,
+    ) -> Result<Option<Response<Self::Commands>>>;
 }
 
 pub enum Response<C> {
@@ -26,7 +33,7 @@ struct Cli<T: Subcommand> {
     command: T,
 }
 
-pub async fn start<R>(repl: &R) -> Result<()>
+pub async fn start<R>(repl: &mut R) -> Result<()>
 where
     R: Repl,
 {
@@ -43,7 +50,6 @@ where
             Ok(Some(Response::Exit)) => break,
             Ok(None) => {}
             Err(e) => {
-                if let Some(e) = e.downcast_ref::<clap::Error>() {}
                 eprintln!("{e:?}");
             }
         }
@@ -52,10 +58,10 @@ where
     Ok(())
 }
 
-pub async fn handle_command<C, R>(repl: &R, input: &str) -> Result<Option<Response<C>>>
+pub async fn handle_command<C, R>(repl: &mut R, input: &str) -> Result<Option<Response<C>>>
 where
     C: Subcommand,
-    R: Repl<Commands = C>
+    R: Repl<Commands = C>,
 {
     let input = input.trim();
     let args = shlex::split(input).ok_or_else(|| miette!("Invalid quoting."))?;
@@ -64,11 +70,13 @@ where
     match res {
         Ok(cli) => repl.respond(cli.command).await,
         Err(e) => match e.kind() {
-            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
+            ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
                 println!("{e}");
                 Ok(None)
             }
-            clap::error::ErrorKind::InvalidSubcommand => {
+            ErrorKind::InvalidSubcommand => {
                 let invalid = e.get(ContextKind::InvalidSubcommand).unwrap();
                 let suggested = e
                     .get(ContextKind::SuggestedSubcommand)
@@ -81,7 +89,18 @@ where
 
                 Err(report)
             }
-            _ => Err(e).into_diagnostic(),
+            ErrorKind::MissingRequiredArgument => {
+                let args = e.get(ContextKind::InvalidArg).unwrap();
+                let usage = e.get(ContextKind::Usage).unwrap();
+
+                let report = miette!(
+                    help = format!("{usage}\nFor more information, try 'help'."),
+                    "The following required arguments were not provided:\n\t{args}\n"
+                );
+
+                Err(report)
+            }
+            _ => Err(dbg!(e)).into_diagnostic(),
         },
     }
 }
