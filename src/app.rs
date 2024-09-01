@@ -34,7 +34,7 @@ impl Repl for App {
     async fn respond(
         &mut self,
         command: Self::Commands,
-    ) -> Result<Option<Response<Self::Commands>>> {
+    ) -> Result<Option<Response>> {
         match command {
             Commands::Connect { url } => match url.scheme() {
                 "ssh" => {

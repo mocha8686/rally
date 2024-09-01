@@ -18,7 +18,7 @@ pub trait Repl {
     async fn respond(
         &mut self,
         command: Self::Commands,
-    ) -> Result<Option<Response<Self::Commands>>>;
+    ) -> Result<Option<Response>>;
 
     async fn start(&mut self) -> Result<()> {
         loop {
@@ -28,9 +28,6 @@ pub trait Repl {
             }
 
             match self.handle_command(&line).await {
-                Ok(Some(Response::Switch(repl))) => {
-                    todo!()
-                }
                 Ok(Some(Response::Exit)) => break,
                 Ok(None) => {}
                 Err(e) => {
@@ -42,7 +39,7 @@ pub trait Repl {
         Ok(())
     }
 
-    async fn handle_command(&mut self, input: &str) -> Result<Option<Response<Self::Commands>>> {
+    async fn handle_command(&mut self, input: &str) -> Result<Option<Response>> {
         let input = input.trim();
         let args = shlex::split(input).ok_or_else(|| miette!("Invalid quoting."))?;
         let res = Cli::try_parse_from(args);
@@ -86,8 +83,7 @@ pub trait Repl {
     }
 }
 
-pub enum Response<C> {
-    Switch(Box<dyn Repl<Commands = C>>),
+pub enum Response {
     Exit,
 }
 
