@@ -131,7 +131,7 @@ async fn create_session(url: &Url) -> Result<client::Handle<Client>> {
     let host = url.host_str().ok_or(miette!("No host provided."))?;
     let port = url.port().unwrap_or(22);
 
-    let config = Arc::new(Default::default());
+    let config = Arc::new(client::Config::default());
 
     let ssh = Client {};
     let mut session = client::connect(config, (host, port), ssh)

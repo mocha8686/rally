@@ -19,7 +19,7 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
-        Default::default()
+        App::default()
     }
 }
 
@@ -55,7 +55,7 @@ impl Repl for App {
                     .into_diagnostic()?;
             }
             Commands::Sessions(SessionsArgs { command }) => {
-                self.handle_session_command(command).await?
+                self.handle_session_command(command).await?;
             }
         }
         Ok(None)
@@ -83,7 +83,7 @@ impl App {
                 }
                 session.start().await?;
             }
-            SessionsCommands::Rename { id, new_id } => self.sessions.rename(id, new_id)?,
+            SessionsCommands::Rename { id, new_id } => self.sessions.rename(id, &new_id)?,
             SessionsCommands::Remove { id } => self.sessions.remove(id)?,
         }
 

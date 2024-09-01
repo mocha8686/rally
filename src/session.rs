@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use async_trait::async_trait;
 use indexmap::IndexMap;
 use miette::{bail, miette, Result};
@@ -60,7 +58,7 @@ impl Sessions {
             .ok_or_else(|| miette!("No session found with ID `{}`.", id))
     }
 
-    pub fn rename(&mut self, id: impl AsRef<str>, new_id: impl ToString) -> Result<()> {
+    pub fn rename(&mut self, id: impl AsRef<str>, new_id: &impl ToString) -> Result<()> {
         let id = id.as_ref();
         let new_id = new_id.to_string();
 
@@ -96,7 +94,7 @@ impl Sessions {
     pub async fn table(&mut self) -> Table {
         let mut builder = Builder::default();
         builder.push_record(["ID", "URL", "Status"]);
-        for (id, session) in self.sessions.iter_mut() {
+        for (id, session) in &mut self.sessions {
             let status = if session.is_connected().await {
                 "Connected".to_string()
             } else {
