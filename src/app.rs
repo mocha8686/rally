@@ -7,7 +7,7 @@ use miette::{bail, miette, IntoDiagnostic, Result};
 use url::Url;
 
 use crate::{
-    repl::{start, Repl, Response},
+    repl::{Repl, Response},
     session::{ssh::Ssh, Session, Sessions},
     style::Style,
 };
@@ -20,10 +20,6 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         Default::default()
-    }
-
-    pub async fn start(&mut self) -> Result<()> {
-        start(self).await
     }
 }
 
