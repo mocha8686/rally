@@ -30,6 +30,7 @@ pub struct Ssh {
     url: Url,
     session: client::Handle<Client>,
     channel: Channel<client::Msg>,
+    is_new_session: bool,
 }
 
 #[async_trait]
@@ -41,6 +42,7 @@ impl Session for Ssh {
             url,
             session,
             channel,
+            is_new_session: true,
         })
     }
 
@@ -48,51 +50,49 @@ impl Session for Ssh {
         &self.url
     }
 
-    async fn read_loop(&mut self) -> Result<()> {
+    async fn read(&mut self) -> Result<Option<Box<[u8]>>> {
         let mut stdin = BufReader::new(io::stdin());
         let mut stdout = BufWriter::new(io::stdout());
         let mut buf = vec![0; 1024];
-        let mut stdin_closed = false;
+        let mut is_new_command = !self.is_new_session;
+        self.is_new_session = false;
 
         loop {
             select! {
-                r = stdin.read(&mut buf), if !stdin_closed => {
-                    match r {
+                r = stdin.read(&mut buf) => {
+                    break match r {
                         Ok(0) => {
-                            stdin_closed = true;
-                            self.channel.eof().await.into_diagnostic()?;
+                            self.close().await?;
+                            Ok(None)
                         },
                         Ok(n) => {
                             let input = &buf[..n];
-                            match input.trim_ascii() {
-                                b"#bg" => break,
-                                _ => self.channel.data(input).await.into_diagnostic()?,
-                            }
+                            Ok(Some(input.into()))
                         },
-                        Err(e) => bail!(e),
+                        Err(e) => Err(miette!(e)),
                     };
                 },
                 Some(msg) = self.channel.wait() => {
                     match msg {
                         ChannelMsg::Data { ref data } => {
-                            stdout.write_all(data).await.into_diagnostic()?;
-                            stdout.flush().await.into_diagnostic()?;
-                        }
-                        // ChannelMsg::ExitStatus { exit_status } => {
-                            // code = exit_status;
-                        ChannelMsg::ExitStatus { .. } => {
-                            if !stdin_closed {
-                                self.channel.eof().await.into_diagnostic()?;
+                            if is_new_command {
+                                if data.ends_with(b"\n") {
+                                    is_new_command = false;
+                                }
+                            } else {
+                                stdout.write_all(data).await.into_diagnostic()?;
+                                stdout.flush().await.into_diagnostic()?;
                             }
-                            break;
+                        }
+                        ChannelMsg::ExitStatus { .. } => {
+                            self.close().await?;
+                            break Ok(None);
                         }
                         _ => {}
                     };
                 }
             }
         }
-
-        Ok(())
     }
 
     async fn is_connected(&mut self) -> bool {
@@ -108,11 +108,17 @@ impl Session for Ssh {
             self.channel = create_channel(&self.session).await?;
         }
 
+        self.is_new_session = true;
+
         Ok(())
     }
 
-    async fn send_data(&mut self, data: &[u8]) -> Result<()> {
+    async fn send_unchecked(&mut self, data: &[u8]) -> Result<()> {
         self.channel.data(data).await.into_diagnostic()
+    }
+
+    async fn close(&mut self) -> Result<()> {
+        self.channel.eof().await.into_diagnostic()
     }
 }
 
@@ -128,7 +134,7 @@ impl Ssh {
 }
 
 async fn create_session(url: &Url) -> Result<client::Handle<Client>> {
-    let host = url.host_str().ok_or(miette!("No host provided."))?;
+    let host = url.host_str().ok_or_else(|| miette!("No host provided."))?;
     let port = url.port().unwrap_or(22);
 
     let config = Arc::new(client::Config::default());

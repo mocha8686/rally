@@ -7,7 +7,7 @@ use miette::{bail, miette, IntoDiagnostic, Result};
 use url::Url;
 
 use crate::{
-    repl::{Repl, Response},
+    repl::Repl,
     session::{ssh::Ssh, Session, Sessions},
     style::Style,
 };
@@ -19,7 +19,7 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
-        App::default()
+        Self::default()
     }
 }
 
@@ -31,10 +31,7 @@ impl Repl for App {
         env!("CARGO_PKG_NAME")
     }
 
-    async fn respond(
-        &mut self,
-        command: Self::Commands,
-    ) -> Result<Option<Response>> {
+    async fn respond(&mut self, command: Self::Commands) -> Result<bool> {
         match command {
             Commands::Connect { url } => match url.scheme() {
                 "ssh" => {
@@ -45,7 +42,7 @@ impl Repl for App {
                 _ => bail!("Scheme {} is not supported.", url.scheme()),
             },
             Commands::Exit => {
-                return Ok(Some(Response::Exit));
+                return Ok(true);
             }
             Commands::Clear => {
                 let (_, lines) = cursor::position().into_diagnostic()?;
@@ -58,7 +55,7 @@ impl Repl for App {
                 self.handle_session_command(command).await?;
             }
         }
-        Ok(None)
+        Ok(false)
     }
 }
 
@@ -80,11 +77,13 @@ impl App {
                     .ok_or_else(|| miette!("No session found with ID `{}`.", id))?;
                 if session.is_connected().await {
                     session.send(b"\n").await?;
+                } else {
+                    session.reconnect().await?;
                 }
                 session.start().await?;
             }
-            SessionsCommands::Rename { id, new_id } => self.sessions.rename(id, &new_id)?,
-            SessionsCommands::Remove { id } => self.sessions.remove(id)?,
+            SessionsCommands::Rename { id, new_id } => self.sessions.rename(&id, &new_id)?,
+            SessionsCommands::Remove { id } => self.sessions.remove(&id).await?,
         }
 
         Ok(())

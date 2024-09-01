@@ -1,8 +1,11 @@
 use async_trait::async_trait;
 use indexmap::IndexMap;
-use miette::{bail, miette, Result};
+use miette::{bail, miette, Context, IntoDiagnostic, Result};
 use tabled::{builder::Builder, Table};
+use tokio::sync::mpsc;
 use url::Url;
+
+use crate::{repl::Repl, termcraft::Termcraft};
 
 pub mod ssh;
 
@@ -14,27 +17,49 @@ pub trait Session {
 
     fn url(&self) -> &Url;
 
-    async fn read_loop(&mut self) -> Result<()>;
+    async fn read(&mut self) -> Result<Option<Box<[u8]>>>;
     async fn is_connected(&mut self) -> bool;
     async fn reconnect(&mut self) -> Result<()>;
 
-    async fn send_data(&mut self, data: &[u8]) -> Result<()>;
+    async fn send_unchecked(&mut self, data: &[u8]) -> Result<()>;
+
+    async fn close(&mut self) -> Result<()>;
 
     async fn start(&mut self) -> Result<()> {
-        if !self.is_connected().await {
-            self.reconnect().await?;
+        let (tx, mut rx) = mpsc::channel(10);
+        let mut termcraft = Termcraft::new(tx);
+
+        loop {
+            let res = self.read().await?;
+            if let Some(input) = res {
+                if input.trim_ascii().starts_with(b"#") {
+                    let input = String::from_utf8(input[1..].to_vec())
+                        .into_diagnostic()
+                        .wrap_err("Failed to parse command.")?;
+
+                    if termcraft.handle_command(&input).await? {
+                        break Ok(());
+                    }
+
+                    if let Some(data) = rx.recv().await.flatten() {
+                        self.send_unchecked(&data).await?;
+                    }
+                } else {
+                    self.send_unchecked(&input).await?;
+                }
+            } else {
+                break Ok(());
+            }
         }
-        self.read_loop().await
     }
 
     async fn send(&mut self, data: &[u8]) -> Result<()> {
         if !self.is_connected().await {
             bail!("Cannot send data to a closed session.");
         }
-        self.send_data(data).await
+        self.send_unchecked(data).await
     }
 }
-
 
 pub type StoredSession = Box<dyn Session + Sync + Send>;
 
@@ -50,15 +75,23 @@ impl Sessions {
         self.sessions.get_mut(&id).unwrap()
     }
 
-    pub fn remove(&mut self, id: impl AsRef<str>) -> Result<()> {
+    pub async fn remove<K>(&mut self, id: &K) -> Result<()>
+    where
+        K: AsRef<str> + Send,
+    {
         let id = id.as_ref();
-        self.sessions
+        let mut session = self
+            .sessions
             .shift_remove(id)
-            .map(|_| ())
-            .ok_or_else(|| miette!("No session found with ID `{}`.", id))
+            .ok_or_else(|| miette!("No session found with ID `{}`.", id))?;
+        session.close().await
     }
 
-    pub fn rename(&mut self, id: impl AsRef<str>, new_id: &impl ToString) -> Result<()> {
+    pub fn rename<K, N>(&mut self, id: &K, new_id: &N) -> Result<()>
+    where
+        K: AsRef<str> + Send,
+        N: ToString + Send,
+    {
         let id = id.as_ref();
         let new_id = new_id.to_string();
 
@@ -75,11 +108,17 @@ impl Sessions {
         Ok(())
     }
 
-    pub fn get(&self, id: impl AsRef<str>) -> Option<&StoredSession> {
+    pub fn get<K>(&self, id: &K) -> Option<&StoredSession>
+    where
+        K: AsRef<str> + Send,
+    {
         self.sessions.get(id.as_ref())
     }
 
-    pub fn get_mut(&mut self, id: impl AsRef<str>) -> Option<&mut StoredSession> {
+    pub fn get_mut<K>(&mut self, id: &K) -> Option<&mut StoredSession>
+    where
+        K: AsRef<str> + Send,
+    {
         self.sessions.get_mut(id.as_ref())
     }
 

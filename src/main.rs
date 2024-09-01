@@ -3,6 +3,7 @@ mod history;
 mod repl;
 mod session;
 mod style;
+mod termcraft;
 
 use app::App;
 use miette::Result;

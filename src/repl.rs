@@ -15,10 +15,7 @@ pub trait Repl {
     type Commands: Subcommand + Send;
 
     fn prompt(&self) -> &str;
-    async fn respond(
-        &mut self,
-        command: Self::Commands,
-    ) -> Result<Option<Response>>;
+    async fn respond(&mut self, command: Self::Commands) -> Result<bool>;
 
     async fn start(&mut self) -> Result<()> {
         loop {
@@ -28,8 +25,8 @@ pub trait Repl {
             }
 
             match self.handle_command(&line).await {
-                Ok(Some(Response::Exit)) => break,
-                Ok(None) => {}
+                Ok(true) => break,
+                Ok(false) => {}
                 Err(e) => {
                     eprintln!("{e:?}");
                 }
@@ -39,7 +36,7 @@ pub trait Repl {
         Ok(())
     }
 
-    async fn handle_command(&mut self, input: &str) -> Result<Option<Response>> {
+    async fn handle_command(&mut self, input: &str) -> Result<bool> {
         let input = input.trim();
         let args = shlex::split(input).ok_or_else(|| miette!("Invalid quoting."))?;
         let res = Cli::try_parse_from(args);
@@ -51,7 +48,7 @@ pub trait Repl {
                 | ErrorKind::DisplayVersion
                 | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
                     println!("{e}");
-                    Ok(None)
+                    Ok(false)
                 }
                 ErrorKind::InvalidSubcommand => {
                     let invalid = e.get(ContextKind::InvalidSubcommand).unwrap();
@@ -77,14 +74,10 @@ pub trait Repl {
 
                     Err(report)
                 }
-                _ => Err(dbg!(e)).into_diagnostic(),
+                _ => Err(e).into_diagnostic(),
             },
         }
     }
-}
-
-pub enum Response {
-    Exit,
 }
 
 #[derive(Debug, Parser)]
