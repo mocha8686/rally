@@ -93,6 +93,7 @@ impl App {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Connect to a new remote.
+    #[command(alias = "conn")]
     Connect {
         /// URL to connect to (proto://user:pass@host:port)
         url: Url,
@@ -106,6 +107,7 @@ pub enum Commands {
     Clear,
 
     /// Manage sessions.
+    #[command(aliases = ["ses", "s"])]
     Sessions(SessionsArgs),
 }
 
