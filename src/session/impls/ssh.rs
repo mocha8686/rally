@@ -1,7 +1,5 @@
 use std::{sync::Arc, time::Duration};
 
-use super::{scheme::Scheme, ConnectionInfo, Session, StoredSession};
-
 use async_trait::async_trait;
 use miette::{bail, miette, IntoDiagnostic, Result};
 use russh::{client, keys::key, Channel, ChannelMsg};
@@ -10,6 +8,8 @@ use tokio::{
     select, time,
 };
 use url::Url;
+
+use crate::session::{scheme::Scheme, store::StoredSession, ConnectionInfo, Session};
 
 struct Client;
 
