@@ -10,7 +10,13 @@ use url::Url;
 
 use crate::{
     repl::Repl,
-    session::{scheme::Scheme, ssh::Ssh, DeserializedSession, Session, Sessions, StoredSession},
+    session::{
+        impls::ssh::Ssh,
+        scheme::Scheme,
+        serde::DeserializedSession,
+        store::{Sessions, StoredSession},
+        Session,
+    },
     style::Style,
 };
 
@@ -73,7 +79,7 @@ impl Repl for App {
 }
 
 impl App {
-    pub async fn cleanup(&mut self) -> Result<()> {
+    pub async fn cleanup(mut self) -> Result<()> {
         let serialized = toml::to_string(&self.sessions)
             .into_diagnostic()
             .wrap_err("Error while saving sessions")?;
@@ -87,6 +93,12 @@ impl App {
             .await
             .into_diagnostic()
             .wrap_err("Failed to save sessions")?;
+
+        for (_, session) in self.sessions.iter_mut() {
+            if let DeserializedSession::Initialized(ref mut session) = session {
+                session.close().await?;
+            }
+        }
 
         Ok(())
     }
