@@ -1,14 +1,16 @@
-use std::io;
-
 use async_trait::async_trait;
 use clap::{command, Args, Subcommand};
 use crossterm::{cursor, terminal, ExecutableCommand, QueueableCommand};
-use miette::{bail, miette, IntoDiagnostic, Result};
+use miette::{bail, miette, Context, IntoDiagnostic, Result};
+use tokio::{
+    fs::File,
+    io::{self, AsyncReadExt, AsyncWriteExt},
+};
 use url::Url;
 
 use crate::{
     repl::Repl,
-    session::{ssh::Ssh, Session, Sessions},
+    session::{scheme::Scheme, ssh::Ssh, DeserializedSession, Session, Sessions, StoredSession},
     style::Style,
 };
 
@@ -18,8 +20,26 @@ pub struct App {
 }
 
 impl App {
-    pub fn new() -> Self {
-        Self::default()
+    pub async fn new() -> Result<Self> {
+        let res = match File::open("rally.toml").await {
+            Ok(mut file) => {
+                let mut data = String::new();
+                let sessions = file
+                    .read_to_string(&mut data)
+                    .await
+                    .into_diagnostic()
+                    .and_then(|_| toml::from_str(&data).into_diagnostic())
+                    .wrap_err("Failed to load sessions")?;
+
+                Self { sessions }
+            }
+            Err(e) => match e.kind() {
+                io::ErrorKind::NotFound => Self::default(),
+                _ => bail!(e),
+            },
+        };
+
+        Ok(res)
     }
 }
 
@@ -33,20 +53,13 @@ impl Repl for App {
 
     async fn respond(&mut self, command: Self::Commands) -> Result<bool> {
         match command {
-            Commands::Connect { url } => match url.scheme() {
-                "ssh" => {
-                    let session = Ssh::connect(url).await?;
-                    let session = self.sessions.add(Box::new(session));
-                    session.start().await?;
-                }
-                _ => bail!("Scheme {} is not supported.", url.scheme()),
-            },
+            Commands::Connect { url } => self.handle_connect(url).await?,
             Commands::Exit => {
                 return Ok(true);
             }
             Commands::Clear => {
                 let (_, lines) = cursor::position().into_diagnostic()?;
-                io::stdout()
+                std::io::stdout()
                     .queue(terminal::ScrollUp(lines))
                     .and_then(|s| s.execute(cursor::MoveTo(0, 0)))
                     .into_diagnostic()?;
@@ -60,6 +73,51 @@ impl Repl for App {
 }
 
 impl App {
+    pub async fn cleanup(&mut self) -> Result<()> {
+        let serialized = toml::to_string(&self.sessions)
+            .into_diagnostic()
+            .wrap_err("Error while saving sessions")?;
+
+        let mut file = File::create("rally.toml")
+            .await
+            .into_diagnostic()
+            .wrap_err("Failed to save sessions")?;
+
+        file.write_all(serialized.as_bytes())
+            .await
+            .into_diagnostic()
+            .wrap_err("Failed to save sessions")?;
+
+        Ok(())
+    }
+
+    async fn handle_connect(&mut self, url: Url) -> Result<()> {
+        let scheme: Scheme = url.scheme().parse()?;
+        let session = self.create_session(url, scheme, None).await?;
+        session.start().await
+    }
+
+    async fn create_session(
+        &mut self,
+        url: Url,
+        scheme: Scheme,
+        key: Option<String>,
+    ) -> Result<&mut StoredSession> {
+        let session = match scheme {
+            Scheme::Ssh => Ssh::connect(url).await?,
+        };
+
+        let session = if let Some(key) = key {
+            self.sessions
+                .insert(key.clone(), DeserializedSession::Initialized(session));
+            self.sessions.get_mut(&key).unwrap().unwrap()
+        } else {
+            self.sessions.add(session)
+        };
+
+        Ok(session)
+    }
+
     async fn handle_session_command(&mut self, command: SessionsCommands) -> Result<()> {
         match command {
             SessionsCommands::List => {
@@ -75,11 +133,23 @@ impl App {
                     .sessions
                     .get_mut(&id)
                     .ok_or_else(|| miette!("No session found with ID `{}`.", id))?;
-                if session.is_connected().await {
-                    session.send(b"\n").await?;
-                } else {
-                    session.reconnect().await?;
-                }
+
+                let session = match session {
+                    DeserializedSession::Uninitialized(connection_info) => {
+                        let connection_info = connection_info.clone();
+                        self.create_session(connection_info.url, connection_info.scheme, Some(id))
+                            .await?
+                    }
+                    DeserializedSession::Initialized(session) => {
+                        if session.is_connected().await {
+                            session.send(b"\n").await?;
+                        } else {
+                            session.reconnect().await?;
+                        }
+                        session
+                    }
+                };
+
                 session.start().await?;
             }
             SessionsCommands::Rename { id, new_id } => self.sessions.rename(&id, &new_id)?,

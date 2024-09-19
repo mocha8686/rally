@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use super::Session;
+use super::{scheme::Scheme, ConnectionInfo, Session, StoredSession};
 
 use async_trait::async_trait;
 use miette::{bail, miette, IntoDiagnostic, Result};
@@ -35,19 +35,25 @@ pub struct Ssh {
 
 #[async_trait]
 impl Session for Ssh {
-    async fn connect(url: Url) -> Result<Self> {
+    async fn connect(url: Url) -> Result<StoredSession> {
         let session = create_session(&url).await?;
         let channel = create_channel(&session).await?;
-        Ok(Self {
-            url,
+
+        let ssh = Self {
+            url: url.clone(),
             session,
             channel,
             is_new_session: true,
-        })
-    }
+        };
+        let connection_info = ConnectionInfo {
+            url,
+            scheme: Scheme::Ssh,
+        };
 
-    fn url(&self) -> &Url {
-        &self.url
+        Ok(StoredSession {
+            connection_info,
+            session: Box::new(ssh),
+        })
     }
 
     async fn read(&mut self) -> Result<Option<Box<[u8]>>> {
@@ -113,7 +119,7 @@ impl Session for Ssh {
         Ok(())
     }
 
-    async fn send_unchecked(&mut self, data: &[u8]) -> Result<()> {
+    async fn send(&mut self, data: &[u8]) -> Result<()> {
         self.channel.data(data).await.into_diagnostic()
     }
 

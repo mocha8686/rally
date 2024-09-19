@@ -11,7 +11,8 @@ use repl::Repl;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut rally = App::new();
+    let mut rally = App::new().await?;
     rally.start().await?;
+    rally.cleanup().await?;
     Ok(())
 }
