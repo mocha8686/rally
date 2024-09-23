@@ -96,7 +96,7 @@ impl App {
 
         for (_, session) in self.sessions.iter_mut() {
             if let DeserializedSession::Initialized(ref mut session) = session {
-                session.close().await?;
+                session.close().await;
             }
         }
 

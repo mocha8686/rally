@@ -25,7 +25,7 @@ pub trait Session {
 
     async fn send(&mut self, data: &[u8]) -> Result<()>;
 
-    async fn close(&mut self) -> Result<()>;
+    async fn close(&mut self);
 
     async fn start(&mut self) -> Result<()> {
         let (tx, mut rx) = mpsc::channel(10);

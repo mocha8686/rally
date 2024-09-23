@@ -1,8 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use miette::{bail, miette, IntoDiagnostic, Result};
-use russh::{client, keys::key, Channel, ChannelMsg};
+use miette::{bail, miette, Context, IntoDiagnostic, Result};
+use russh::{client, keys::key, Channel, ChannelMsg, Disconnect};
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
     select, time,
@@ -68,7 +68,7 @@ impl Session for Ssh {
                 r = stdin.read(&mut buf) => {
                     break match r {
                         Ok(0) => {
-                            self.close().await?;
+                            self.close().await;
                             Ok(None)
                         },
                         Ok(n) => {
@@ -91,7 +91,7 @@ impl Session for Ssh {
                             }
                         }
                         ChannelMsg::ExitStatus { .. } => {
-                            self.close().await?;
+                            self.close().await;
                             break Ok(None);
                         }
                         _ => {}
@@ -123,8 +123,9 @@ impl Session for Ssh {
         self.channel.data(data).await.into_diagnostic()
     }
 
-    async fn close(&mut self) -> Result<()> {
-        self.channel.eof().await.into_diagnostic()
+    async fn close(&mut self) {
+        self.channel.eof().await.ok();
+        self.session.disconnect(Disconnect::ByApplication, "", "English").await.ok();
     }
 }
 

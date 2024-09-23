@@ -40,10 +40,10 @@ impl Sessions {
             .shift_remove(id)
             .ok_or_else(|| miette!("No session found with ID `{}`.", id))?;
         if let DeserializedSession::Initialized(mut session) = session {
-            session.close().await
-        } else {
-            Ok(())
+            session.close().await;
         }
+
+        Ok(())
     }
 
     pub fn rename<K, N>(&mut self, id: &K, new_id: &N) -> Result<()>
