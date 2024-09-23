@@ -175,7 +175,7 @@ impl App {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Connect to a new remote.
-    #[command(alias = "conn")]
+    #[command(aliases = ["conn", "c"])]
     Connect {
         /// URL to connect to (proto://user:pass@host:port)
         url: Url,
@@ -207,7 +207,7 @@ enum SessionsCommands {
     List,
 
     /// Open a session.
-    #[command(aliases = ["fg", "connect"])]
+    #[command(aliases = ["fg", "connect", "conn", "c", "o"])]
     Open {
         /// Session ID.
         id: String,
