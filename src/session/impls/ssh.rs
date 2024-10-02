@@ -1,15 +1,16 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use miette::{bail, miette, Context, IntoDiagnostic, Result};
 use russh::{client, keys::key, Channel, ChannelMsg, Disconnect};
 use tokio::{
-    io::{self, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
-    select, time,
+    select,
+    sync::mpsc,
+    task::{self, JoinHandle},
 };
 use url::Url;
 
-use crate::session::{scheme::Scheme, store::StoredSession, ConnectionInfo, Session};
+use crate::session::{scheme::Scheme, store::StoredSession, ConnectionInfo, In, Out, Session};
 
 struct Client;
 
@@ -28,23 +29,23 @@ impl client::Handler for Client {
 
 pub struct Ssh {
     url: Url,
-    session: client::Handle<Client>,
-    channel: Channel<client::Msg>,
-    is_new_session: bool,
+    thread: Option<task::JoinHandle<Result<()>>>,
+
+    tx: Option<mpsc::Sender<In>>,
+    rx: Option<mpsc::Receiver<Out>>,
 }
 
 #[async_trait]
 impl Session for Ssh {
-    async fn connect(url: Url) -> Result<StoredSession> {
-        let session = create_session(&url).await?;
-        let channel = create_channel(&session).await?;
-
+    async fn new(url: Url) -> Result<StoredSession> {
         let ssh = Self {
             url: url.clone(),
-            session,
-            channel,
-            is_new_session: true,
+            thread: None,
+
+            tx: None,
+            rx: None,
         };
+
         let connection_info = ConnectionInfo {
             url,
             scheme: Scheme::Ssh,
@@ -56,87 +57,72 @@ impl Session for Ssh {
         })
     }
 
-    async fn read(&mut self) -> Result<Option<Box<[u8]>>> {
-        let mut stdin = BufReader::new(io::stdin());
-        let mut stdout = BufWriter::new(io::stdout());
-        let mut buf = vec![0; 1024];
-        let mut is_new_command = !self.is_new_session;
-        self.is_new_session = false;
+    async fn connect(&mut self) -> Result<()> {
+        let session = create_session(&self.url).await?;
+        let mut channel = create_channel(&session).await?;
+        let (tx_in, rx_in) = mpsc::channel(10);
+        let (tx_out, rx_out) = mpsc::channel(10);
 
-        loop {
-            select! {
-                r = stdin.read(&mut buf) => {
-                    break match r {
-                        Ok(0) => {
-                            self.close().await;
-                            Ok(None)
+        self.tx.replace(tx_in);
+        self.rx.replace(rx_out);
+
+        let (tx, mut rx) = (tx_out, rx_in);
+
+        let handle = task::spawn(async move {
+            let mut is_new_command = false;
+
+            loop {
+                select! {
+                    Some(input) = rx.recv() => match input {
+                        In::Stdin(data) => {
+                            channel.data(&data[..]).await.into_diagnostic()?;
+                            is_new_command = true;
                         },
-                        Ok(n) => {
-                            let input = &buf[..n];
-                            Ok(Some(input.into()))
-                        },
-                        Err(e) => Err(miette!(e)),
-                    };
-                },
-                Some(msg) = self.channel.wait() => {
-                    match msg {
-                        ChannelMsg::Data { ref data } => {
+                        In::Close => break,
+                    },
+                    Some(msg) = channel.wait() => match msg {
+                        ChannelMsg::Data { data } => {
                             if is_new_command {
                                 if data.ends_with(b"\n") {
                                     is_new_command = false;
                                 }
                             } else {
-                                stdout.write_all(data).await.into_diagnostic()?;
-                                stdout.flush().await.into_diagnostic()?;
+                                let data: Box<[u8]> = data.to_vec().into_boxed_slice();
+                                tx.send(Out::Stdout(data)).await.into_diagnostic()?;
                             }
                         }
                         ChannelMsg::ExitStatus { .. } => {
-                            self.close().await;
-                            break Ok(None);
+                            break;
                         }
                         _ => {}
-                    };
+                    }
                 }
             }
-        }
-    }
 
-    async fn is_connected(&mut self) -> bool {
-        self.session_is_connected() && self.channel_is_connected().await
-    }
+            channel.eof().await.into_diagnostic()?;
+            session
+                .disconnect(Disconnect::ByApplication, "", "English")
+                .await
+                .into_diagnostic()?;
 
-    async fn reconnect(&mut self) -> Result<()> {
-        if !self.session_is_connected() {
-            self.session = create_session(&self.url).await?;
-        }
+            Ok(())
+        });
 
-        if !self.channel_is_connected().await {
-            self.channel = create_channel(&self.session).await?;
-        }
-
-        self.is_new_session = true;
+        self.thread.replace(handle);
 
         Ok(())
     }
 
-    async fn send(&mut self, data: &[u8]) -> Result<()> {
-        self.channel.data(data).await.into_diagnostic()
+    fn tx(&self) -> Option<mpsc::Sender<In>> {
+        self.tx.clone()
     }
 
-    async fn close(&mut self) {
-        self.channel.eof().await.ok();
-        self.session.disconnect(Disconnect::ByApplication, "", "English").await.ok();
-    }
-}
-
-impl Ssh {
-    fn session_is_connected(&self) -> bool {
-        !self.session.is_closed()
+    fn rx(&mut self) -> Option<&mut mpsc::Receiver<Out>> {
+        self.rx.as_mut()
     }
 
-    async fn channel_is_connected(&mut self) -> bool {
-        let timeout = time::timeout(Duration::from_millis(50), self.channel.wait()).await;
-        !matches!(timeout, Ok(None))
+    fn thread(&mut self) -> Option<&mut JoinHandle<Result<()>>> {
+        self.thread.as_mut()
     }
 }
 
@@ -163,20 +149,22 @@ async fn create_session(url: &Url) -> Result<client::Handle<Client>> {
 }
 
 async fn create_channel(session: &client::Handle<Client>) -> Result<Channel<client::Msg>> {
-    let channel = session.channel_open_session().await.into_diagnostic()?;
-    let (w, h) = crossterm::terminal::size().into_diagnostic()?;
+    let channel = session
+        .channel_open_session()
+        .await
+        .into_diagnostic()
+        .wrap_err("Failed to create ssh channel")?;
+    let (w, h) = crossterm::terminal::size()
+        .into_diagnostic()
+        .wrap_err("Failed to create ssh channel")?;
     channel
-        .request_pty(
-            false,
-            &std::env::var("TERM").unwrap_or_else(|_| "xterm".into()),
-            w.into(),
-            h.into(),
-            0,
-            0,
-            &[],
-        )
+        .request_pty(false, "xterm".into(), w.into(), h.into(), 0, 0, &[])
         .await
         .into_diagnostic()?;
-    channel.request_shell(false).await.into_diagnostic()?;
+    channel
+        .request_shell(false)
+        .await
+        .into_diagnostic()
+        .wrap_err("Failed to create ssh channel")?;
     Ok(channel)
 }

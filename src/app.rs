@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use clap::{command, Args, Subcommand};
 use crossterm::{cursor, terminal, ExecutableCommand, QueueableCommand};
@@ -5,10 +7,12 @@ use miette::{bail, miette, Context, IntoDiagnostic, Result};
 use tokio::{
     fs::File,
     io::{self, AsyncReadExt, AsyncWriteExt},
+    sync::Mutex,
 };
 use url::Url;
 
 use crate::{
+    input::Input,
     repl::Repl,
     session::{
         impls::ssh::Ssh,
@@ -23,6 +27,7 @@ use crate::{
 #[derive(Default)]
 pub struct App {
     sessions: Sessions,
+    input: Arc<Mutex<Input>>,
 }
 
 impl App {
@@ -37,7 +42,10 @@ impl App {
                     .and_then(|_| toml::from_str(&data).into_diagnostic())
                     .wrap_err("Failed to load sessions")?;
 
-                Self { sessions }
+                Self {
+                    sessions,
+                    input: Arc::new(Mutex::new(Input::new())),
+                }
             }
             Err(e) => match e.kind() {
                 io::ErrorKind::NotFound => Self::default(),
@@ -46,6 +54,11 @@ impl App {
         };
 
         Ok(res)
+    }
+
+    pub async fn start_app(&mut self) -> Result<()> {
+        let input = self.input.clone();
+        self.start(input).await
     }
 }
 
@@ -96,7 +109,7 @@ impl App {
 
         for (_, session) in self.sessions.iter_mut() {
             if let DeserializedSession::Initialized(ref mut session) = session {
-                session.close().await;
+                session.disconnect().await;
             }
         }
 
@@ -104,9 +117,10 @@ impl App {
     }
 
     async fn handle_connect(&mut self, url: Url) -> Result<()> {
+        let input = self.input.clone();
         let scheme: Scheme = url.scheme().parse()?;
         let session = self.create_session(url, scheme, None).await?;
-        session.start().await
+        session.start(input).await
     }
 
     async fn create_session(
@@ -116,7 +130,7 @@ impl App {
         key: Option<String>,
     ) -> Result<&mut StoredSession> {
         let session = match scheme {
-            Scheme::Ssh => Ssh::connect(url).await?,
+            Scheme::Ssh => Ssh::new(url).await?,
         };
 
         let session = if let Some(key) = key {
@@ -141,6 +155,8 @@ impl App {
                 println!("{out}");
             }
             SessionsCommands::Open { id } => {
+                let input = self.input.clone();
+
                 let session = self
                     .sessions
                     .get_mut(&id)
@@ -149,20 +165,23 @@ impl App {
                 let session = match session {
                     DeserializedSession::Uninitialized(connection_info) => {
                         let connection_info = connection_info.clone();
-                        self.create_session(connection_info.url, connection_info.scheme, Some(id))
-                            .await?
+                        let session = self
+                            .create_session(connection_info.url, connection_info.scheme, Some(id))
+                            .await?;
+                        session.connect().await?;
+                        session
                     }
                     DeserializedSession::Initialized(session) => {
                         if session.is_connected().await {
-                            session.send(b"\n").await?;
+                            session.send_bytes(b"\n").await?;
                         } else {
-                            session.reconnect().await?;
+                            session.connect().await?;
                         }
                         session
                     }
                 };
 
-                session.start().await?;
+                session.start(input).await?;
             }
             SessionsCommands::Rename { id, new_id } => self.sessions.rename(&id, &new_id)?,
             SessionsCommands::Remove { id } => self.sessions.remove(&id).await?,

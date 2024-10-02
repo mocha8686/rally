@@ -1,58 +1,109 @@
 pub mod impls;
 pub mod scheme;
-pub mod store;
 pub mod serde;
+pub mod store;
 
-use async_trait::async_trait;
-use miette::{Context, IntoDiagnostic, Result};
-use scheme::Scheme;
 use ::serde::{Deserialize, Serialize};
+use async_trait::async_trait;
+use miette::{miette, IntoDiagnostic, Result};
+use scheme::Scheme;
 use store::StoredSession;
-use tokio::sync::mpsc;
+use tokio::{io::AsyncWriteExt, select, sync::mpsc, task::JoinHandle};
 use url::Url;
 
-use crate::{repl::Repl, termcraft::Termcraft};
+use crate::{input::SharedInput, repl::Repl, termcraft::Termcraft};
 
 #[async_trait]
 pub trait Session {
-    async fn connect(url: Url) -> Result<StoredSession>
+    async fn new(url: Url) -> Result<StoredSession>
     where
         Self: Sized;
 
-    async fn read(&mut self) -> Result<Option<Box<[u8]>>>;
-    async fn is_connected(&mut self) -> bool;
-    async fn reconnect(&mut self) -> Result<()>;
+    async fn connect(&mut self) -> Result<()>;
 
-    async fn send(&mut self, data: &[u8]) -> Result<()>;
+    fn tx(&self) -> Option<mpsc::Sender<In>>;
+    fn rx(&mut self) -> Option<&mut mpsc::Receiver<Out>>;
+    fn thread(&mut self) -> Option<&mut JoinHandle<Result<()>>>;
 
-    async fn close(&mut self);
+    async fn is_connected(&mut self) -> bool {
+        self.thread()
+            .map(|thread| !thread.is_finished())
+            .unwrap_or(false)
+    }
 
-    async fn start(&mut self) -> Result<()> {
-        let (tx, mut rx) = mpsc::channel(10);
-        let mut termcraft = Termcraft::new(tx);
+    async fn send(&mut self, data: Box<[u8]>) -> Result<()> {
+        let tx = self
+            .tx()
+            .ok_or_else(|| miette!("Channel to session thread is closed."))?;
+        tx.send(In::Stdin(data)).await.into_diagnostic()?;
+        Ok(())
+    }
 
-        loop {
-            let res = self.read().await?;
-            let Some(input) = res else {
-                break Ok(());
-            };
+    async fn send_bytes(&mut self, data: &[u8]) -> Result<()> {
+        self.send(data[..].into()).await
+    }
 
-            if input.trim_ascii().starts_with(b"#") {
-                let input = String::from_utf8(input[1..].to_vec())
-                    .into_diagnostic()
-                    .wrap_err("Failed to parse command.")?;
+    async fn disconnect(&mut self) {
+        let Some(tx) = self.tx() else { return };
+        tx.send(In::Close).await.ok();
+        let Some(thread) = self.thread() else { return };
 
-                if termcraft.handle_command(&input).await? {
-                    break Ok(());
+        if let Err(e) = thread.await {
+            println!("{e}");
+        };
+    }
+
+    async fn start(&mut self, input: SharedInput) -> Result<()> {
+        let (termcraft_tx, mut termcraft_rx) = mpsc::channel(1);
+        let mut termcraft = Termcraft::new(termcraft_tx);
+
+        let tx = self
+            .tx()
+            .ok_or_else(|| miette!("Channel does not exist."))?;
+        let rx = self
+            .rx()
+            .ok_or_else(|| miette!("Channel does not exist."))?;
+
+        let mut input = input.lock().await;
+        let notify = input.notify();
+        let input = input.rx();
+        notify.notify_waiters();
+
+        let res = loop {
+            select! {
+                Some(data) = input.recv() => {
+                    notify.notify_one();
+                    let data = data.trim_start();
+
+                    if data.starts_with("#") {
+                        if termcraft.handle_command(&data).await? {
+                            break Ok(());
+                        }
+
+                        if let Some(data) = termcraft_rx.recv().await.flatten() {
+                            tx.send(In::Stdin(data)).await.into_diagnostic()?;
+                        }
+
+                        tx.send(In::Stdin(b"\n"[..].into()))
+                            .await
+                            .into_diagnostic()?;
+                    } else {
+                        let data: Box<[u8]> = data.bytes().collect();
+                        tx.send(In::Stdin(data)).await.into_diagnostic()?;
+                    }
                 }
-
-                if let Some(data) = rx.recv().await.flatten() {
-                    self.send(&data).await?;
+                Some(input) = rx.recv() => match input {
+                    Out::Stdout(data) => {
+                        let mut stdout = tokio::io::stdout();
+                        stdout.write_all(&data).await.into_diagnostic()?;
+                        stdout.flush().await.into_diagnostic()?;
+                    },
                 }
-            } else {
-                self.send(&input).await?;
             }
-        }
+        };
+
+        tx.send(In::Close).await.into_diagnostic()?;
+        res
     }
 }
 
@@ -60,4 +111,15 @@ pub trait Session {
 pub struct ConnectionInfo {
     pub url: Url,
     pub scheme: Scheme,
+}
+
+#[derive(Debug, Clone)]
+pub enum In {
+    Stdin(Box<[u8]>),
+    Close,
+}
+
+#[derive(Debug, Clone)]
+pub enum Out {
+    Stdout(Box<[u8]>),
 }

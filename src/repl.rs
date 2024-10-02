@@ -6,31 +6,50 @@ use clap::{
 };
 use miette::{miette, IntoDiagnostic, Result};
 use owo_colors::OwoColorize;
-use rustyline::{Config, DefaultEditor, EditMode};
+use tokio::io::{self, AsyncWriteExt};
 
-use crate::history::get_history_path;
+use crate::input::{InputReceiver, SharedInput};
 
 #[async_trait]
 pub trait Repl {
     type Commands: Subcommand + Send;
 
     fn prompt(&self) -> &str;
+
+    /// Respond to a command.
+    ///
+    /// Return Ok(true) to exit.
     async fn respond(&mut self, command: Self::Commands) -> Result<bool>;
 
-    async fn start(&mut self) -> Result<()> {
+    async fn start(&mut self, input: SharedInput) -> Result<()> {
+        let notify = {
+            let input = input.lock().await;
+            input.notify()
+        };
+
         loop {
-            let line = read_line(self.prompt())?;
+            let line = {
+                let mut input = input.lock().await;
+                let mut rx = input.rx();
+                read_line(self.prompt(), &mut rx).await?
+            };
+
             if line.is_empty() {
+                notify.notify_one();
                 continue;
             }
 
             match self.handle_command(&line).await {
-                Ok(true) => break,
+                Ok(true) => {
+                    notify.notify_one();
+                    break;
+                },
                 Ok(false) => {}
                 Err(e) => {
                     eprintln!("{e:?}");
                 }
             }
+            notify.notify_one();
         }
 
         Ok(())
@@ -87,24 +106,28 @@ struct Cli<T: Subcommand> {
     command: T,
 }
 
-pub fn read_line(prompt: &str) -> Result<String> {
-    let history_res = get_history_path(prompt);
+pub async fn read_line(prompt: &str, rx: &mut InputReceiver) -> Result<String> {
+    // let history_res = get_history_path(prompt);
+    //
+    // let config = Config::builder().edit_mode(EditMode::Vi).build();
+    // let mut rl = DefaultEditor::with_config(config).into_diagnostic()?;
+    //
+    // if let Some(history_path) = &history_res {
+    //     rl.load_history(history_path).ok();
+    // }
 
-    let config = Config::builder().edit_mode(EditMode::Vi).build();
-    let mut rl = DefaultEditor::with_config(config).into_diagnostic()?;
+    let mut stdout = io::stdout();
+    stdout.write_all(format!("{}> ", prompt.blue()).as_bytes()).await.into_diagnostic()?;
+    stdout.flush().await.into_diagnostic()?;
+    let res = rx
+        .recv()
+        .await
+        .ok_or_else(|| miette!("Failed to read line."))?;
 
-    if let Some(history_path) = &history_res {
-        rl.load_history(history_path).ok();
-    }
-
-    let res = rl
-        .readline(&format!("{}> ", prompt.blue()))
-        .into_diagnostic()?;
-
-    if let Some(history_path) = &history_res {
-        rl.add_history_entry(res.clone()).into_diagnostic()?;
-        rl.save_history(history_path).into_diagnostic()?;
-    }
+    // if let Some(history_path) = &history_res {
+    //     rl.add_history_entry(res.clone()).into_diagnostic()?;
+    //     rl.save_history(history_path).into_diagnostic()?;
+    // }
 
     Ok(res)
 }
